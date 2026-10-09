@@ -52,8 +52,8 @@ MAX_RESUME_CHARS = 12000  # keeps us inside Groq token limits
 MAX_JD_CHARS = 6000
 UNKNOWN = "Unknown / Not Demonstrated"
 
-SAMPLE_RESUME = """Mahnoor
-Karachi, Pakistan | Mahnoor.khan@example.com
+SAMPLE_RESUME = """Ayesha Khan
+Karachi, Pakistan | ayesha.khan@example.com
 
 SUMMARY
 Marketing graduate with 2 years of experience in social media and content creation.
@@ -182,10 +182,15 @@ def extract_pdf_text(uploaded_file):
 def friendly_error(exc: Exception) -> str:
     """Turn technical errors into simple messages for students."""
     msg = str(exc).lower()
-    if isinstance(exc, ImportError) or "litellm" in msg:
+    if isinstance(exc, ImportError):
         return (
             "📦 A required library is missing (litellm). Run `pip install -r requirements.txt` "
             "again (or redeploy on Streamlit Cloud), then try again."
+        )
+    if "badrequest" in msg or "invalid_request_error" in msg or "unsupported" in msg:
+        return (
+            "🛠️ Groq did not accept the request format. Please open 'Technical details' below "
+            "and share it so we can fix it."
         )
     if "rate limit" in msg or "429" in msg or "rate_limit" in msg or "tokens per" in msg:
         return (
@@ -295,9 +300,49 @@ def parse_json_output(raw: str):
     return data if isinstance(data, dict) else None
 
 
+def patch_litellm_strip_cache_marker():
+    """
+    Newer CrewAI versions add an internal 'cache_breakpoint' key to messages.
+    Groq rejects that key, so we remove it just before the request is sent.
+    Safe to call many times; it only patches once.
+    """
+    try:
+        import litellm
+    except Exception:
+        return
+    if getattr(litellm, "_rra_patched", False):
+        return
+
+    def clean(messages):
+        if isinstance(messages, list):
+            return [
+                {k: v for k, v in m.items() if k != "cache_breakpoint"} if isinstance(m, dict) else m
+                for m in messages
+            ]
+        return messages
+
+    def make_wrapper(original):
+        def wrapper(*args, **kwargs):
+            if "messages" in kwargs:
+                kwargs["messages"] = clean(kwargs["messages"])
+            elif len(args) >= 2:
+                args = (args[0], clean(args[1])) + tuple(args[2:])
+            return original(*args, **kwargs)
+
+        return wrapper
+
+    for name in ("completion", "acompletion"):
+        original = getattr(litellm, name, None)
+        if original is not None:
+            setattr(litellm, name, make_wrapper(original))
+    litellm._rra_patched = True
+
+
 def run_review(resume, jd, api_key, model, tone, focus):
     """The heart of the app: 1 Agent + 1 Task + 1 Crew."""
     from crewai import LLM, Agent, Crew, Process, Task
+
+    patch_litellm_strip_cache_marker()
 
     model_name = model if model.startswith("groq/") else f"groq/{model}"
     llm = LLM(model=model_name, api_key=api_key, temperature=0.2, timeout=120)
