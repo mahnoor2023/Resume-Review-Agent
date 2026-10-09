@@ -53,7 +53,7 @@ MAX_JD_CHARS = 6000
 UNKNOWN = "Unknown / Not Demonstrated"
 
 SAMPLE_RESUME = """Mahnoor
-Karachi, Pakistan | Mahnor@example.com
+Karachi, Pakistan | Mahnoor.khan@example.com
 
 SUMMARY
 Marketing graduate with 2 years of experience in social media and content creation.
@@ -182,6 +182,11 @@ def extract_pdf_text(uploaded_file):
 def friendly_error(exc: Exception) -> str:
     """Turn technical errors into simple messages for students."""
     msg = str(exc).lower()
+    if isinstance(exc, ImportError) or "litellm" in msg:
+        return (
+            "📦 A required library is missing (litellm). Run `pip install -r requirements.txt` "
+            "again (or redeploy on Streamlit Cloud), then try again."
+        )
     if "rate limit" in msg or "429" in msg or "rate_limit" in msg or "tokens per" in msg:
         return (
             "⏳ Groq is receiving too many requests right now (rate limit). "
