@@ -18,6 +18,8 @@ import os
 import re
 import sys
 import time
+import urllib.error
+import urllib.request
 
 # Some hosting machines have an old SQLite that CrewAI dislikes.
 # If pysqlite3 is installed, we use it instead. If not, we simply continue.
@@ -50,8 +52,8 @@ MAX_RESUME_CHARS = 12000  # keeps us inside Groq token limits
 MAX_JD_CHARS = 6000
 UNKNOWN = "Unknown / Not Demonstrated"
 
-SAMPLE_RESUME = """Ayesha Khan
-Karachi, Pakistan | ayesha.khan@example.com
+SAMPLE_RESUME = """Mahnoor
+Karachi, Pakistan | Mahnor@example.com
 
 SUMMARY
 Marketing graduate with 2 years of experience in social media and content creation.
@@ -197,6 +199,36 @@ def friendly_error(exc: Exception) -> str:
     if "connection" in msg or "network" in msg:
         return "🌐 Could not connect to Groq. Please check your internet connection and try again."
     return "⚠️ Something went wrong while reviewing your resume. Please try again in a moment."
+
+
+def test_groq_connection(api_key: str):
+    """Quick check: can this app reach Groq and is the key accepted? Returns (ok, message)."""
+    req = urllib.request.Request(
+        "https://api.groq.com/openai/v1/models",
+        headers={"Authorization": f"Bearer {api_key}", "User-Agent": "resume-review-agent"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        ids = [m.get("id") for m in body.get("data", [])]
+        return True, ids
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            return False, f"Groq was reached, but the API key was rejected (HTTP {e.code}). Create a new key."
+        return False, f"Groq answered with HTTP {e.code}."
+    except Exception as e:  # noqa: BLE001
+        return False, (
+            "This computer/server cannot reach api.groq.com "
+            f"({type(e).__name__}). Check internet, VPN, firewall or ISP blocking."
+        )
+
+
+def redact(text: str, secret) -> str:
+    """Hide the API key if it ever appears in an error message."""
+    text = str(text)
+    if secret:
+        text = text.replace(secret, "***")
+    return re.sub(r"gsk_[A-Za-z0-9]+", "gsk_***", text)[:800]
 
 
 def build_task_description(resume, jd, tone, focus):
@@ -478,6 +510,17 @@ with st.sidebar:
     else:
         st.error("API key missing ❌")
     st.button("✨ Try with sample data", on_click=load_sample, use_container_width=True)
+    if st.button("🔌 Test Groq connection", use_container_width=True, disabled=not api_key):
+        with st.spinner("Checking Groq..."):
+            ok, info = test_groq_connection(api_key)
+        if ok:
+            st.success("Connected to Groq and the key works ✅")
+            if model in info:
+                st.caption(f"Model `{model}` is available.")
+            else:
+                st.warning(f"Model `{model}` is NOT in your list. Try `openai/gpt-oss-120b`.")
+        else:
+            st.error(info)
 
 # ----------------------------------------------------------------------------
 # Main page
@@ -554,6 +597,8 @@ if go:
             st.session_state.pop("data", None)
             st.session_state.pop("raw", None)
             st.error(friendly_error(exc))
+            with st.expander("🔧 Technical details (share this if you need help)"):
+                st.code(f"{type(exc).__name__}: {redact(exc, api_key)}")
 
 if st.session_state.get("raw"):
     st.divider()
